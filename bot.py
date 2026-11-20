@@ -138,61 +138,81 @@ def render_png(d: date, info: dict):
     except ImportError:
         return None
 
+    S = 3  # render at 3x for a sharp picture
+
     def font(size, bold=False):
-        names = ["DejaVuSans-Bold.ttf" if bold else "DejaVuSans.ttf"]
-        dirs = ["/usr/share/fonts/truetype/dejavu/", "/usr/share/fonts/dejavu/", ""]
-        for n in names:
-            for dd in dirs:
-                try:
-                    return ImageFont.truetype(dd + n, size)
-                except OSError:
-                    pass
+        name = "DejaVuSans-Bold.ttf" if bold else "DejaVuSans.ttf"
+        for folder in ["/usr/share/fonts/truetype/dejavu/", "/usr/share/fonts/dejavu/", ""]:
+            try:
+                return ImageFont.truetype(folder + name, size * S)
+            except OSError:
+                pass
         return ImageFont.load_default()
 
-    W, cell, left, top = 1240, 44, 150, 80
-    H = top + 120 + 70
-    img = Image.new("RGB", (W, H), (246, 247, 251))
-    dr = ImageDraw.Draw(img)
-    dr.text((24, 22), "Графік відключень (Прикарпаттяобленерго)", font=font(24, True), fill=(20, 20, 30))
-    badge = f"Черга: {QUEUE}"
-    bw = dr.textlength(badge, font=font(20, True)) + 28
-    dr.rounded_rectangle((W - bw - 24, 18, W - 24, 52), 16, fill=(255, 214, 102))
-    dr.text((W - bw - 10, 23), badge, font=font(20, True), fill=(30, 30, 30))
+    BG, CARD, GRID = (243, 244, 248), (255, 255, 255), (214, 217, 226)
+    TEXT, MUTED = (24, 26, 34), (110, 114, 128)
+    OFF, ON = (55, 65, 81), (255, 255, 255)
+    YELLOW = (255, 205, 60)
 
-    # hours header
-    y0 = top
-    for h in range(24):
-        x = left + h * cell
-        dr.rectangle((x, y0, x + cell, y0 + 50), outline=(210, 212, 220), fill=(255, 255, 255))
-        dr.text((x + 6, y0 + 8), f"{h:02d}-", font=font(13), fill=(60, 60, 70))
-        dr.text((x + 6, y0 + 27), f"{(h + 1) % 24:02d}", font=font(13), fill=(60, 60, 70))
-    dr.text((20, y0 + 16), "Години", font=font(16, True), fill=(40, 40, 50))
-
-    # day row (half-hour resolution)
-    y1 = y0 + 50
-    dr.text((20, y1 + 20), f"{d:%d.%m}", font=font(18, True), fill=(40, 40, 50))
+    cell, left, pad = 64, 24, 24
+    W = left * 2 + 12 * cell
+    row_h, head_h = 56, 30
     off = info["intervals"]
-    for half in range(48):
-        a, b = half * 30, half * 30 + 30
-        x = left + (half // 2) * cell + (cell // 2 if half % 2 else 0)
-        is_off = any(s < b and e > a for s, e in off)
-        dr.rectangle((x, y1, x + cell // 2, y1 + 60), fill=(150, 150, 160) if is_off else (255, 255, 255))
-    for h in range(25):
-        x = left + h * cell
-        dr.line((x, y1, x, y1 + 60), fill=(210, 212, 220))
-    dr.rectangle((left, y1, left + 24 * cell, y1 + 60), outline=(210, 212, 220))
+    H = 96 + 2 * (head_h + row_h + 26) + 84
 
-    # legend
-    ly = y1 + 80
-    dr.rectangle((left, ly, left + 24, ly + 24), fill=(255, 255, 255), outline=(200, 200, 210))
-    dr.text((left + 32, ly + 3), "Світло є", font=font(16), fill=(60, 60, 70))
-    dr.rectangle((left + 160, ly, left + 184, ly + 24), fill=(150, 150, 160))
-    dr.text((left + 192, ly + 3), "Світла немає", font=font(16), fill=(60, 60, 70))
-    if info["updated"]:
-        dr.text((W - 330, ly + 3), f"Оновлено {info['updated']}", font=font(15), fill=(110, 110, 120))
+    img = Image.new("RGB", (W * S, H * S), BG)
+    dr = ImageDraw.Draw(img)
+
+    def rect(x0, y0, x1, y1, **kw):
+        dr.rectangle((x0 * S, y0 * S, x1 * S, y1 * S), **kw)
+
+    def text(x, y, s, f, fill=TEXT, anchor="la"):
+        dr.text((x * S, y * S), s, font=f, fill=fill, anchor=anchor)
+
+    # title + badge
+    text(pad, 22, "Графік відключень", font(26, True))
+    text(pad, 58, f"{d:%d.%m.%Y}, {WEEKDAYS[d.weekday()]}", font(17), MUTED)
+    badge = f"Черга {QUEUE}"
+    bw = dr.textlength(badge, font=font(20, True)) / S + 32
+    dr.rounded_rectangle(((W - pad - bw) * S, 24 * S, (W - pad) * S, 62 * S), 19 * S, fill=YELLOW)
+    text(W - pad - bw / 2, 43, badge, font(20, True), anchor="mm")
+
+    y = 96
+    for block in range(2):
+        start_h = block * 12
+        # hour labels
+        for i in range(12):
+            text(left + i * cell + cell / 2, y + head_h / 2, f"{start_h + i:02d}", font(16, True), MUTED, "mm")
+        y += head_h
+        # half-hour cells
+        for half in range(24):
+            a = (start_h * 60) + half * 30
+            is_off = any(s < a + 30 and e > a for s, e in off)
+            x = left + half * cell / 2
+            rect(x, y, x + cell / 2, y + row_h, fill=OFF if is_off else ON)
+        for i in range(13):
+            x = left + i * cell
+            dr.line((x * S, y * S, x * S, (y + row_h) * S), fill=GRID, width=S)
+        for i in range(12):  # thin half-hour line
+            x = left + i * cell + cell / 2
+            dr.line((x * S, (y + row_h - 10) * S, x * S, (y + row_h) * S), fill=GRID, width=S)
+        rect(left, y, left + 12 * cell, y + row_h, outline=(190, 194, 206), width=2 * S)
+        y += row_h + 26
+
+    # summary
+    total = sum(e - s for s, e in off)
+    summary = "Відключень немає" if not off else "  •  ".join(f"{fmt(s)}–{fmt(e)}" for s, e in off)
+    text(pad, y, summary, font(19, True))
+    y += 38
+    rect(pad, y, pad + 22, y + 22, fill=ON, outline=(190, 194, 206), width=S)
+    text(pad + 30, y + 11, "світло є", font(15), MUTED, "lm")
+    rect(pad + 130, y, pad + 152, y + 22, fill=OFF)
+    text(pad + 160, y + 11, "світла немає", font(15), MUTED, "lm")
+    if off:
+        text(W - pad, y + 11, f"Без світла: {dur(total)}", font(15, True), TEXT, "rm")
 
     buf = io.BytesIO()
-    img.save(buf, "PNG")
+    img.save(buf, "PNG", optimize=True)
     return buf.getvalue()
 
 
