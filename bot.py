@@ -16,6 +16,7 @@ import io
 import json
 import os
 import sys
+import time
 import urllib.parse
 import urllib.request
 import uuid
@@ -138,7 +139,7 @@ def render_png(d: date, info: dict):
     except ImportError:
         return None
 
-    S = 3  # render at 3x for a sharp picture
+    S = 2  # render at 2x for a sharp picture
 
     def font(size, bold=False):
         name = "DejaVuSans-Bold.ttf" if bold else "DejaVuSans.ttf"
@@ -235,22 +236,39 @@ def _post(method: str, fields: dict, file_bytes=None):
         body.write(f"\r\n--{boundary}--\r\n".encode())
         req = urllib.request.Request(url, data=body.getvalue(),
                                      headers={"Content-Type": f"multipart/form-data; boundary={boundary}"})
-    with urllib.request.urlopen(req, timeout=30) as r:
-        r.read()
+    last_err = None
+    for attempt in range(3):
+        try:
+            with urllib.request.urlopen(req, timeout=90) as r:
+                r.read()
+            return
+        except Exception as err:  # network hiccup -> try again
+            last_err = err
+            print(f"Telegram {method} attempt {attempt + 1} failed: {err}", file=sys.stderr)
+            time.sleep(5)
+    raise last_err
 
 
-def send(text: str, photo: bytes = None) -> None:
+def send(text: str, photo: bytes = None) -> bool:
     if not BOT_TOKEN or not CHAT_ID:
         print("---- (no token, not sent)" + (" [+picture]" if photo else "") + " ----\n" + text + "\n")
         if photo and PREVIEW_DIR:
             p = Path(PREVIEW_DIR) / f"preview_{hashlib.sha1(text.encode()).hexdigest()[:6]}.png"
             p.write_bytes(photo)
-        return
+        return True
     base = {"chat_id": CHAT_ID, "parse_mode": "HTML"}
     if photo:
-        _post("sendPhoto", {**base, "caption": text}, photo)
-    else:
+        try:
+            _post("sendPhoto", {**base, "caption": text}, photo)
+            return True
+        except Exception as err:
+            print(f"Photo failed, sending text only: {err}", file=sys.stderr)
+    try:
         _post("sendMessage", {**base, "text": text, "disable_web_page_preview": "true"})
+        return True
+    except Exception as err:
+        print(f"Message failed, will retry next run: {err}", file=sys.stderr)
+        return False
 
 
 # ---------------- state ----------------
@@ -292,8 +310,8 @@ def main() -> int:
             header = "🆕 З'явився графік\n"
         else:
             header = "🔄 <b>Графік змінився</b>\n"
-        send(schedule_text(d, info, today, header), render_png(d, info))
-        seen[d.isoformat()] = fp
+        if send(schedule_text(d, info, today, header), render_png(d, info)):
+            seen[d.isoformat()] = fp
 
     # 2) warnings and switch messages
     periods = timeline(tl_days)
@@ -313,10 +331,10 @@ def main() -> int:
         if LEAD_MINUTES and 0 < mins <= LEAD_MINUTES and key_pre not in sent and key_now not in sent:
             verb = "вимкнуть" if kind == "off" else "мають увімкнути"
             icon = "⚠️" if kind == "off" else "🔜"
-            send(f"{icon} Через {dur(mins)} світло {verb} (о <b>{moment:%H:%M}</b>)")
-            sent.add(key_pre)
+            if send(f"{icon} Через {dur(mins)} світло {verb} (о <b>{moment:%H:%M}</b>)"):
+                sent.add(key_pre)
 
-        if -20 <= mins <= 0 and key_now not in sent:
+        if -35 <= mins <= 0 and key_now not in sent:
             nxt_txt = f"{nxt:%H:%M}" if nxt else None
             if nxt and nxt.date() != moment.date():
                 nxt_txt += f" ({nxt:%d.%m})"
@@ -333,8 +351,8 @@ def main() -> int:
                     lines.append(f"🗓 Наступне відключення о <b>{nxt_txt}</b>")
                 else:
                     lines.append("🗓 Більше відключень за графіком немає")
-            send("\n".join(lines))
-            sent.add(key_now)
+            if send("\n".join(lines)):
+                sent.add(key_now)
 
     # tidy
     cutoff = (now - timedelta(days=2)).isoformat()
